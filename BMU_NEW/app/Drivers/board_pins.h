@@ -1,0 +1,25 @@
+#ifndef BOARD_PINS_H
+#define BOARD_PINS_H
+
+#include "n32g45x.h"
+
+#define BOARD_AFE_SCL_PORT        GPIOD
+#define BOARD_AFE_SCL_PIN         GPIO_PIN_1
+
+#define BOARD_AFE_SDA_PORT        GPIOD
+#define BOARD_AFE_SDA_PIN         GPIO_PIN_2
+
+#define BOARD_AFE_NSHDN_PORT      GPIOC
+#define BOARD_AFE_NSHDN_PIN       GPIO_PIN_3
+
+#define BOARD_AFE_XALERT_PORT     GPIOD
+#define BOARD_AFE_XALERT_PIN      GPIO_PIN_10
+#define BOARD_AFE_XALERT_PRESENT  0
+
+#define BOARD_POWER_CTRL1_PORT    GPIOB
+#define BOARD_POWER_CTRL1_PIN     GPIO_PIN_12
+
+#define BOARD_POWER_CTRL2_PORT    GPIOB
+#define BOARD_POWER_CTRL2_PIN     GPIO_PIN_13
+
+#endif /* BOARD_PINS_H */

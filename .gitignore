@@ -1,0 +1,8 @@
+# Build outputs
+/BMU_NEW/build/
+/BMU_NEW/MDK-ARM/Objects/
+/BMU_NEW/MDK-ARM/Listings/
+/BMU_NEW/MDK-ARM/bin/
+
+# Temporary files
+/BMU_NEW/debug.log
