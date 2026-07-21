@@ -174,6 +174,9 @@ bool GPIO_Configuration(void)
     GPIO_InitStructure.Pin        =GPIO_PIN_6;
     GPIO_InitPeripheral(GPIOD,&GPIO_InitStructure);
      
+    GPIO_InitStructure.Pin        =GPIO_PIN_11;
+    GPIO_InitPeripheral(GPIOC,&GPIO_InitStructure);
+     
     /*Initialize AF_PP GPIO */
     GPIO_InitStructure.GPIO_Mode  = GPIO_Mode_AF_PP;
     GPIO_InitStructure.GPIO_Speed = GPIO_Speed_2MHz;
@@ -185,6 +188,9 @@ bool GPIO_Configuration(void)
      
     GPIO_InitStructure.Pin        =GPIO_PIN_5;
     GPIO_InitPeripheral(GPIOD,&GPIO_InitStructure);
+     
+    GPIO_InitStructure.Pin        =GPIO_PIN_10;
+    GPIO_InitPeripheral(GPIOC,&GPIO_InitStructure);
      
     /*config SYSpin remap*/
     GPIO_ConfigPinRemap(GPIO_RMP_SW_JTAG_SW_ENABLE, ENABLE);
@@ -205,8 +211,8 @@ bool USART_Configuration(void)
 {
     USART_InitType USART_InitStructure;
     USART_StructInit(&USART_InitStructure);
-    /* EnableUSART2clock */
-    RCC_EnableAPB1PeriphClk(RCC_APB1_PERIPH_USART2,ENABLE);
+    /* EnableUSART2|UART4clock */
+    RCC_EnableAPB1PeriphClk(RCC_APB1_PERIPH_USART2|RCC_APB1_PERIPH_UART4,ENABLE);
     /* EnableUSART1clock */
     RCC_EnableAPB2PeriphClk(RCC_APB2_PERIPH_USART1,ENABLE);
      
@@ -230,6 +236,13 @@ bool USART_Configuration(void)
      
     /* Enable the USART2 */
     USART_Enable(USART2, ENABLE);
+     
+    /*********initialize the UART4************/
+    /* Configure UART4 */
+    USART_Init(UART4, &USART_InitStructure);
+     
+    /* Enable the UART4 */
+    USART_Enable(UART4, ENABLE);
 /* NTFx CODE END */
     return true;
 }
