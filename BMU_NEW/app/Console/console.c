@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "bms_app.h"
+#include "n32g45x.h"
 #include "pc_uart.h"
 
 #define CONSOLE_COMMAND_BUFFER_SIZE 32u
