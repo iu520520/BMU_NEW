@@ -138,11 +138,12 @@ bool GPIO_Configuration(void)
     GPIO_InitStruct(&GPIO_InitStructure);
      
     /* Enable the GPIO clock*/
-    RCC_EnableAPB2PeriphClk(RCC_APB2_PERIPH_GPIOB | RCC_APB2_PERIPH_GPIOA | RCC_APB2_PERIPH_GPIOD | RCC_APB2_PERIPH_GPIOC | RCC_APB2_PERIPH_AFIO, ENABLE);
+    RCC_EnableAPB2PeriphClk(RCC_APB2_PERIPH_GPIOA | RCC_APB2_PERIPH_GPIOB | RCC_APB2_PERIPH_GPIOC | RCC_APB2_PERIPH_GPIOD | RCC_APB2_PERIPH_GPIOE | RCC_APB2_PERIPH_AFIO, ENABLE);
     
      
     GPIO_SetBits(GPIOD,GPIO_PIN_1 | GPIO_PIN_2);
     GPIO_SetBits(GPIOB,GPIO_PIN_4 | GPIO_PIN_0);
+    GPIO_SetBits(GPIOE,GPIO_PIN_7);
      
     GPIO_ResetBits(GPIOC,GPIO_PIN_3);
     GPIO_ResetBits(GPIOB,GPIO_PIN_12 | GPIO_PIN_13);
@@ -161,6 +162,9 @@ bool GPIO_Configuration(void)
      
     GPIO_InitStructure.Pin        =GPIO_PIN_12 | GPIO_PIN_13 | GPIO_PIN_4 | GPIO_PIN_0;
     GPIO_InitPeripheral(GPIOB,&GPIO_InitStructure);
+     
+    GPIO_InitStructure.Pin        =GPIO_PIN_7;
+    GPIO_InitPeripheral(GPIOE,&GPIO_InitStructure);
      
     /*Initialize IPU  GPIO */
     GPIO_InitStructure.GPIO_Mode  = GPIO_Mode_IPU;
