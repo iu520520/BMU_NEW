@@ -25,6 +25,18 @@ int main(void)
     CAN_Configuration();
     DMA_Configuration();
     /* NTFx CODE END Config*/
+    
+/*RCC 配置完成后，根据真实寄存器更新 SystemCoreClock。这里只更新软件变量，不会再次改变系统时钟。*/
+    SystemCoreClockUpdate();
+
+    /* 按真实系统时钟重新配置 1 ms SysTick。 */
+    if (SysTick_Config(SystemCoreClock / 1000u) != 0u)
+    {
+        while (1)
+        {
+            __NOP();
+        }
+    }
 
     bms_app_init();
     while(1)

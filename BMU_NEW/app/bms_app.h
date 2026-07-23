@@ -14,6 +14,12 @@ extern "C" {
 void bms_app_init(void);
 void bms_app_task(void);
 
+/* 启动 AFE 并开始周期采样；初始化失败时不会在后台自动重试。 */
+mp2797_status_t bms_app_start_afe(void);
+
+/* 停止 AFE 采样、关闭 AFE，并使旧电压数据失效。 */
+void bms_app_stop_afe(void);
+
 /*
  * 测试阶段采用纯手动均衡。只有调用此接口才会开启指定通道，范围为1～16。
  * 启动前必须已经取得一组有效的AFE单体电压。
