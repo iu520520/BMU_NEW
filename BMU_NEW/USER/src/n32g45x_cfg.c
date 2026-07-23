@@ -104,6 +104,7 @@ bool RCC_Configuration(void)
  */
 bool NVIC_Configuration(void)
 {
+    NVIC_InitType NVIC_InitStructure;
     /*Configure the preemption priority and subpriority:
     - 4 bits for pre-emption priority: possible value are 0..15
     - 0 bits for subpriority: possible value are 0
@@ -111,6 +112,12 @@ bool NVIC_Configuration(void)
     */
     NVIC_PriorityGroupConfig(NVIC_PriorityGroup_4);
     
+    /*Set UART4  interrupt priority*/
+    NVIC_InitStructure.NVIC_IRQChannel                   =UART4_IRQn;
+    NVIC_InitStructure.NVIC_IRQChannelPreemptionPriority =5;
+    NVIC_InitStructure.NVIC_IRQChannelSubPriority        =0;
+    NVIC_InitStructure.NVIC_IRQChannelCmd                = ENABLE;
+    NVIC_Init(&NVIC_InitStructure);
 /* NTFx CODE END */
     return true;
 }
@@ -245,6 +252,11 @@ bool USART_Configuration(void)
     /* Configure UART4 */
     USART_Init(UART4, &USART_InitStructure);
      
+     
+    /* Clear UART4 RXDNE interrupt flag*/
+    USART_ClrFlag(UART4,USART_FLAG_RXDNE);
+    /* Enable UART4 RXDNE interrupt*/
+    USART_ConfigInt(UART4,USART_INT_RXDNE,ENABLE);
     /* Enable the UART4 */
     USART_Enable(UART4, ENABLE);
 /* NTFx CODE END */

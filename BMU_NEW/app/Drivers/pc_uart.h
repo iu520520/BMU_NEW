@@ -32,8 +32,8 @@ typedef struct
 /* UART4 的波特率、数据位和 PC10/PC11 复用配置由 NTFx 生成代码完成。 */
 void pc_uart_init(void);
 
-/* 当前采用轮询接收，主循环应当频繁调用。 */
-void pc_uart_poll(void);
+/* 由 UART4_IRQHandler 调用：读取硬件接收寄存器并写入环形缓冲区。 */
+void pc_uart_irq_handler(void);
 
 size_t pc_uart_available(void);
 pc_uart_status_t pc_uart_read_byte(uint8_t *data);

@@ -32,9 +32,8 @@ void bms_app_init(void)
 
 void bms_app_task(void)
 {
-    /* 必须放在周期任务判断之前，避免人工输入命令时接收寄存器溢出。 */
+    /* RS232仍采用轮询；PC调试串口已经由UART4接收中断写入环形缓冲区。 */
     rs232_poll();
-    pc_uart_poll();
     console_task();
 
     uint32_t now_ms = mwTick;
