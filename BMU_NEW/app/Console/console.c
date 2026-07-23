@@ -267,9 +267,19 @@ static void console_print_afe_voltages(void)//在串口中打印电压数据
     {
         return;
     }
+    voltages = bms_app_get_voltages();
+
+    /*
+     * 分步采样期间等待整帧完成再打印。这里不更新时间戳，
+     * 因而状态机结束后会立即输出新数据或本轮错误。
+     */
+    if (bms_app_is_afe_sampling())
+    {
+        return;
+    }
+
     s_last_afe_print_ms = now_ms;//记录本次打印时间
 
-    voltages = bms_app_get_voltages();
     if ((bms_app_get_afe_status() != MP2797_STATUS_OK) || !voltages->valid)//检查 AFE 状态和电压数据是否有效
     {
         mp2797_status_t status = bms_app_get_afe_status();

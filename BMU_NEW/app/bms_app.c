@@ -14,6 +14,14 @@ static mp2797_config_t s_afe_config;
 static mp2797_cell_voltages_t s_voltages;
 static uint32_t s_last_sample_ms;
 
+static void bms_app_handle_afe_failure(mp2797_status_t status,
+                                       uint32_t now_ms)
+{
+    s_afe_status = status;
+    s_voltages.valid = false;
+    cell_balance_stop(CELL_BALANCE_STOP_AFE_ERROR, now_ms);
+}
+
 void bms_app_init(void)
 {
     rs232_init();
@@ -37,6 +45,34 @@ void bms_app_task(void)
     console_task();
 
     uint32_t now_ms = mwTick;
+
+    /*
+     * 每次主循环只推进采样状态机一步。BUSY仅表示本轮采样尚未完成，
+     * 不是AFE故障，因此保留上一帧状态和值，并马上把执行权交还主循环。
+     */
+    if (mp2797_sample_is_active())
+    {
+        mp2797_status_t sample_status =
+            mp2797_sample_process(now_ms, &s_voltages);
+
+        if (sample_status == MP2797_STATUS_BUSY)
+        {
+            return;
+        }
+
+        if ((sample_status != MP2797_STATUS_OK) || !s_voltages.valid)
+        {
+            bms_app_handle_afe_failure(sample_status, now_ms);
+            return;
+        }
+
+        s_afe_status = MP2797_STATUS_OK;
+        (void)cell_balance_process(s_voltages.cell_mv,
+                                   s_voltages.cell_count,
+                                   now_ms);
+        return;
+    }
+
     if ((uint32_t)(now_ms - s_last_sample_ms) < BMS_VOLTAGE_SAMPLE_PERIOD_MS)
     {
         return;
@@ -45,24 +81,23 @@ void bms_app_task(void)
 
     if (!mp2797_is_ready())
     {
-        cell_balance_stop(CELL_BALANCE_STOP_AFE_ERROR, now_ms);
-        s_voltages.valid = false;
         /* AFE 始终保持唤醒；初始化失败时每秒重新尝试建立通信。 */
         s_afe_status = mp2797_init(&s_afe_config);
-        return;
+        if (s_afe_status != MP2797_STATUS_OK)
+        {
+            bms_app_handle_afe_failure(s_afe_status, now_ms);
+            return;
+        }
     }
 
-    s_afe_status = mp2797_read_cell_voltages(&s_voltages);
-    if ((s_afe_status != MP2797_STATUS_OK) || !s_voltages.valid)
+    mp2797_status_t start_status = mp2797_sample_begin();
+    if ((start_status == MP2797_STATUS_OK)
+        || (start_status == MP2797_STATUS_BUSY))
     {
-        cell_balance_stop(CELL_BALANCE_STOP_AFE_ERROR, now_ms);
-        s_voltages.valid = false;
         return;
     }
 
-    (void)cell_balance_process(s_voltages.cell_mv,
-                               s_voltages.cell_count,
-                               now_ms);
+    bms_app_handle_afe_failure(start_status, now_ms);
 }
 
 cell_balance_status_t bms_app_start_balance(uint8_t cell_number)
@@ -86,6 +121,11 @@ void bms_app_stop_balance(void)
 mp2797_status_t bms_app_get_afe_status(void)
 {
     return s_afe_status;
+}
+
+bool bms_app_is_afe_sampling(void)
+{
+    return mp2797_sample_is_active();
 }
 
 const mp2797_cell_voltages_t *bms_app_get_voltages(void)

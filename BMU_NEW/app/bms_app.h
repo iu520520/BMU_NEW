@@ -24,6 +24,7 @@ cell_balance_status_t bms_app_start_balance(uint8_t cell_number);
 void bms_app_stop_balance(void);
 
 mp2797_status_t bms_app_get_afe_status(void);
+bool bms_app_is_afe_sampling(void);
 const mp2797_cell_voltages_t *bms_app_get_voltages(void);
 const cell_balance_state_t *bms_app_get_balance_state(void);
 

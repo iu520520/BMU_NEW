@@ -98,7 +98,20 @@ mp2797_status_t mp2797_read_cell_voltage(uint8_t cell_number,
                                          uint16_t *millivolts);
 mp2797_status_t mp2797_read_pack_voltage(uint16_t *raw, uint32_t *millivolts);
 
-/* 启动一次扫描，在限定超时时间内等待完成，然后输出一份完整电压快照。 */
+/*
+ * 分步非阻塞采样接口：
+ * - begin只初始化采样上下文，不访问I2C；
+ * - process每次最多执行一次I2C寄存器事务；
+ * - process返回BUSY表示仍在进行，返回OK时才发布完整电压快照；
+ * - 其他返回值表示本次采样失败，工作快照会被丢弃。
+ */
+mp2797_status_t mp2797_sample_begin(void);
+mp2797_status_t mp2797_sample_process(uint32_t now_ms,
+                                      mp2797_cell_voltages_t *voltages);
+bool mp2797_sample_is_active(void);
+void mp2797_sample_abort(void);
+
+/* 阻塞式兼容接口；主循环不应调用，新代码应使用上述分步采样接口。 */
 mp2797_status_t mp2797_read_cell_voltages(mp2797_cell_voltages_t *voltages);
 
 uint16_t mp2797_cell_raw_to_mv(uint16_t raw);

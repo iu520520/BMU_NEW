@@ -65,9 +65,43 @@
 #define MP2797_WAKE_DELAY_US                5000u
 #define MP2797_FUNCTION_COMMAND_DELAY_US    200u
 
+/*
+ * 当前系统只有1 ms节拍。等待两个节拍可以保证即使命令恰好在一次
+ * SysTick到来前发出，也仍会留下超过1 ms的总线空闲时间，满足至少
+ * 200 us的时序要求。
+ */
+#define MP2797_SAMPLE_WAIT_TICKS             2u
+
+typedef enum
+{
+    MP2797_SAMPLE_STATE_IDLE = 0,
+    MP2797_SAMPLE_STATE_CHECK_PREVIOUS,
+    MP2797_SAMPLE_STATE_WAIT_PREVIOUS,
+    MP2797_SAMPLE_STATE_START_SCAN,
+    MP2797_SAMPLE_STATE_WAIT_AFTER_START,
+    MP2797_SAMPLE_STATE_POLL_SCAN,
+    MP2797_SAMPLE_STATE_CLEAR_SCAN,
+    MP2797_SAMPLE_STATE_WAIT_AFTER_CLEAR,
+    MP2797_SAMPLE_STATE_READ_PACK,
+    MP2797_SAMPLE_STATE_READ_CELL,
+} mp2797_sample_state_t;
+
+typedef struct
+{
+    mp2797_sample_state_t state;
+    mp2797_sample_state_t state_after_clear;
+    mp2797_status_t status_after_clear;
+    mp2797_cell_voltages_t working_voltages;
+    uint32_t next_action_ms;
+    uint32_t scan_deadline_ms;
+    uint16_t poll_count;
+    uint8_t cell_index;
+} mp2797_sample_context_t;
+
 static mp2797_config_t s_mp2797_config;
 static bool s_mp2797_config_valid;
 static bool s_mp2797_ready;
+static mp2797_sample_context_t s_sample;
 
 
 /*把i2c的错误状态转换成MP2797的错误状态*/
@@ -126,6 +160,49 @@ static void mp2797_delay_us(uint32_t delay_us)
     {
         mp2797_default_delay_us(delay_us);
     }
+}
+
+/* 使用有符号差值判断32位毫秒计数是否到达期限，并兼容计数器回绕。 */
+static bool mp2797_time_reached(uint32_t now_ms, uint32_t deadline_ms)
+{
+    return (int32_t)(now_ms - deadline_ms) >= 0;
+}
+
+/*
+ * 轮询次数仍按原配置限制，同时给状态机增加绝对墙钟期限，
+ * 防止主循环繁忙时把一次异常扫描无限拉长。
+ */
+static uint32_t mp2797_sample_poll_window_ms(void)
+{
+    return ((uint32_t)s_mp2797_config.scan_poll_limit + 1u)
+           * MP2797_SAMPLE_WAIT_TICKS;
+}
+
+/* 清空分步采样的全部临时状态，不修改上一份已经发布的电压快照。 */
+static void mp2797_sample_reset_context(void)
+{
+    memset(&s_sample, 0, sizeof(s_sample));
+    s_sample.state = MP2797_SAMPLE_STATE_IDLE;
+}
+
+/* 结束一次失败的分步采样，并把状态机恢复为空闲。 */
+static mp2797_status_t mp2797_sample_fail(mp2797_status_t status)
+{
+    s_sample.working_voltages.valid = false;
+    s_sample.state = MP2797_SAMPLE_STATE_IDLE;
+    return status;
+}
+
+/*
+ * 安排清除ADC_CTRL。清除完成并等待规定的总线空闲时间后，
+ * 状态机可以继续到next_state，也可以回到IDLE并返回terminal_status。
+ */
+static void mp2797_sample_request_clear(mp2797_sample_state_t next_state,
+                                        mp2797_status_t terminal_status)
+{
+    s_sample.state_after_clear = next_state;
+    s_sample.status_after_clear = terminal_status;
+    s_sample.state = MP2797_SAMPLE_STATE_CLEAR_SCAN;
 }
 
 /*更新计算CRC校验值*/
@@ -408,6 +485,8 @@ mp2797_status_t mp2797_init(const mp2797_config_t *config)
         return MP2797_STATUS_INVALID_ARG;
     }
 
+    /* 重新初始化会取消尚未完成的旧采样，防止旧结果在新配置下发布。 */
+    mp2797_sample_reset_context();
     s_mp2797_config = *config;
     if (s_mp2797_config.i2c_address == 0u)
     {
@@ -472,6 +551,10 @@ mp2797_status_t mp2797_probe(void)
     {
         return MP2797_STATUS_NOT_READY;
     }
+    if (mp2797_sample_is_active())
+    {
+        return MP2797_STATUS_BUSY;
+    }
 
     uint16_t power_status = 0u;
     return mp2797_read_word_internal(MP2797_REG_PWR_STATUS, &power_status);
@@ -482,6 +565,10 @@ mp2797_status_t mp2797_configure_voltage_only(void)//把芯片配置成只采电
     if (!s_mp2797_ready)
     {
         return MP2797_STATUS_NOT_READY;
+    }
+    if (mp2797_sample_is_active())
+    {
+        return MP2797_STATUS_BUSY;
     }
 
     mp2797_status_t status = mp2797_apply_voltage_only_config();
@@ -495,6 +582,11 @@ mp2797_status_t mp2797_configure_voltage_only(void)//把芯片配置成只采电
 
 mp2797_status_t mp2797_read_register(uint8_t reg_addr, uint16_t *value)
 {
+    if (mp2797_sample_is_active())
+    {
+        return MP2797_STATUS_BUSY;
+    }
+
     return mp2797_read_word_internal(reg_addr, value);
 }
 
@@ -503,6 +595,10 @@ mp2797_status_t mp2797_start_voltage_scan(void)//向 MP2797 发出一次“开�
     if (!s_mp2797_ready)
     {
         return MP2797_STATUS_NOT_READY;
+    }
+    if (mp2797_sample_is_active())
+    {
+        return MP2797_STATUS_BUSY;
     }
 
     uint16_t adc_ctrl = 0u;
@@ -540,7 +636,8 @@ mp2797_status_t mp2797_start_voltage_scan(void)//向 MP2797 发出一次“开�
     return MP2797_STATUS_OK;
 }
 
-mp2797_status_t mp2797_get_voltage_scan_state(mp2797_scan_state_t *state)//读取 MP2797 的 ADC_CTRL 寄存器，判断电压扫描目前处于哪个状态
+static mp2797_status_t mp2797_get_voltage_scan_state_internal(
+    mp2797_scan_state_t *state)//读取 MP2797 的 ADC_CTRL 寄存器，判断电压扫描目前处于哪个状态
 {
     if (state == NULL)
     {
@@ -579,11 +676,25 @@ mp2797_status_t mp2797_get_voltage_scan_state(mp2797_scan_state_t *state)//读�
     return MP2797_STATUS_OK;
 }
 
+mp2797_status_t mp2797_get_voltage_scan_state(mp2797_scan_state_t *state)
+{
+    if (mp2797_sample_is_active())
+    {
+        return MP2797_STATUS_BUSY;
+    }
+
+    return mp2797_get_voltage_scan_state_internal(state);
+}
+
 mp2797_status_t mp2797_wait_voltage_scan(void)//等待 MP2797 的电压扫描结束，直到返回扫描完成，扫描错误，通信失败or超时
 {
     if (!s_mp2797_ready)
     {
         return MP2797_STATUS_NOT_READY;
+    }
+    if (mp2797_sample_is_active())
+    {
+        return MP2797_STATUS_BUSY;
     }
 
     for (uint16_t poll = 0u; poll < s_mp2797_config.scan_poll_limit; poll++)
@@ -610,6 +721,18 @@ mp2797_status_t mp2797_wait_voltage_scan(void)//等待 MP2797 的电压扫描结
         mp2797_delay_us(MP2797_FUNCTION_COMMAND_DELAY_US);
     }
 
+    /*
+     * 兼容接口超时后也要撤销功能命令，避免下一次调用一直看到旧GO位。
+     * 若连清命令都通信失败，优先返回该通信错误。
+     */
+    mp2797_status_t clear_status =
+        mp2797_write_word_internal(MP2797_REG_ADC_CTRL, 0u);
+    if (clear_status != MP2797_STATUS_OK)
+    {
+        return clear_status;
+    }
+    mp2797_delay_us(MP2797_FUNCTION_COMMAND_DELAY_US);
+
     return MP2797_STATUS_TIMEOUT;
 }
 
@@ -625,9 +748,10 @@ uint32_t mp2797_pack_raw_to_mv(uint16_t raw)//把总电池电压转化为mV
     return (code * 80000u + 16384u) / 32768u;//满量程80V，15位ADC
 }
 
-mp2797_status_t mp2797_read_cell_voltage(uint8_t cell_number,
-                                         uint16_t *raw,
-                                        uint16_t *millivolts)//读取指定电芯的ADC电压值（电芯编号，15位ADC原始数据的指针，换算后的电压值的指针）
+static mp2797_status_t mp2797_read_cell_voltage_internal(
+    uint8_t cell_number,
+    uint16_t *raw,
+    uint16_t *millivolts)//读取指定电芯的ADC电压值（电芯编号，15位ADC原始数据的指针，换算后的电压值的指针）
 {
     if ((raw == NULL) && (millivolts == NULL))
     {
@@ -665,7 +789,21 @@ mp2797_status_t mp2797_read_cell_voltage(uint8_t cell_number,
     return MP2797_STATUS_OK;
 }
 
-mp2797_status_t mp2797_read_pack_voltage(uint16_t *raw, uint32_t *millivolts)//读取VTOP的电压
+mp2797_status_t mp2797_read_cell_voltage(uint8_t cell_number,
+                                         uint16_t *raw,
+                                         uint16_t *millivolts)
+{
+    if (mp2797_sample_is_active())
+    {
+        return MP2797_STATUS_BUSY;
+    }
+
+    return mp2797_read_cell_voltage_internal(cell_number, raw, millivolts);
+}
+
+static mp2797_status_t mp2797_read_pack_voltage_internal(
+    uint16_t *raw,
+    uint32_t *millivolts)//读取VTOP的电压
 {
     if ((raw == NULL) && (millivolts == NULL))
     {
@@ -697,11 +835,303 @@ mp2797_status_t mp2797_read_pack_voltage(uint16_t *raw, uint32_t *millivolts)//�
     return MP2797_STATUS_OK;
 }
 
+mp2797_status_t mp2797_read_pack_voltage(uint16_t *raw, uint32_t *millivolts)
+{
+    if (mp2797_sample_is_active())
+    {
+        return MP2797_STATUS_BUSY;
+    }
+
+    return mp2797_read_pack_voltage_internal(raw, millivolts);
+}
+
+mp2797_status_t mp2797_sample_begin(void)
+{
+    if (!s_mp2797_ready)
+    {
+        return MP2797_STATUS_NOT_READY;
+    }
+    if (mp2797_sample_is_active())
+    {
+        return MP2797_STATUS_BUSY;
+    }
+
+    mp2797_sample_reset_context();
+    s_sample.working_voltages.cell_count = s_mp2797_config.cell_count;
+    s_sample.state = MP2797_SAMPLE_STATE_CHECK_PREVIOUS;
+    return MP2797_STATUS_OK;
+}
+
+bool mp2797_sample_is_active(void)
+{
+    return s_sample.state != MP2797_SAMPLE_STATE_IDLE;
+}
+
+void mp2797_sample_abort(void)
+{
+    /*
+     * 这里只取消MCU侧状态。若AFE内部仍有扫描命令，下一次begin后的
+     * CHECK_PREVIOUS步骤会检测并清理它。
+     */
+    mp2797_sample_reset_context();
+}
+
+mp2797_status_t mp2797_sample_process(uint32_t now_ms,
+                                      mp2797_cell_voltages_t *voltages)
+{
+    mp2797_status_t status;
+    mp2797_scan_state_t scan_state;
+
+    if (voltages == NULL)
+    {
+        return MP2797_STATUS_INVALID_ARG;
+    }
+    if (!s_mp2797_ready)
+    {
+        mp2797_sample_reset_context();
+        return MP2797_STATUS_NOT_READY;
+    }
+    if (!mp2797_sample_is_active())
+    {
+        return MP2797_STATUS_NOT_READY;
+    }
+
+    switch (s_sample.state)
+    {
+        case MP2797_SAMPLE_STATE_CHECK_PREVIOUS:
+            status = mp2797_get_voltage_scan_state_internal(&scan_state);
+            if (status != MP2797_STATUS_OK)
+            {
+                return mp2797_sample_fail(status);
+            }
+
+            if (scan_state == MP2797_SCAN_STATE_BUSY)
+            {
+                s_sample.poll_count = 1u;
+                if (s_sample.poll_count >= s_mp2797_config.scan_poll_limit)
+                {
+                    mp2797_sample_request_clear(MP2797_SAMPLE_STATE_IDLE,
+                                                 MP2797_STATUS_TIMEOUT);
+                }
+                else
+                {
+                    s_sample.next_action_ms = now_ms + MP2797_SAMPLE_WAIT_TICKS;
+                    s_sample.scan_deadline_ms =
+                        now_ms + mp2797_sample_poll_window_ms();
+                    s_sample.state = MP2797_SAMPLE_STATE_WAIT_PREVIOUS;
+                }
+            }
+            else if ((scan_state == MP2797_SCAN_STATE_DONE)
+                     || (scan_state == MP2797_SCAN_STATE_ERROR))
+            {
+                /* 无论旧终态的GO位是否仍为1，都先清零再启动新扫描。 */
+                mp2797_sample_request_clear(MP2797_SAMPLE_STATE_START_SCAN,
+                                             MP2797_STATUS_BUSY);
+            }
+            else
+            {
+                s_sample.state = MP2797_SAMPLE_STATE_START_SCAN;
+            }
+            return MP2797_STATUS_BUSY;
+
+        case MP2797_SAMPLE_STATE_WAIT_PREVIOUS:
+            if (!mp2797_time_reached(now_ms, s_sample.next_action_ms))
+            {
+                return MP2797_STATUS_BUSY;
+            }
+            if (mp2797_time_reached(now_ms, s_sample.scan_deadline_ms))
+            {
+                mp2797_sample_request_clear(MP2797_SAMPLE_STATE_IDLE,
+                                             MP2797_STATUS_TIMEOUT);
+                return MP2797_STATUS_BUSY;
+            }
+
+            status = mp2797_get_voltage_scan_state_internal(&scan_state);
+            if (status != MP2797_STATUS_OK)
+            {
+                return mp2797_sample_fail(status);
+            }
+
+            if (scan_state == MP2797_SCAN_STATE_BUSY)
+            {
+                s_sample.poll_count++;
+                if (s_sample.poll_count >= s_mp2797_config.scan_poll_limit)
+                {
+                    mp2797_sample_request_clear(MP2797_SAMPLE_STATE_IDLE,
+                                                 MP2797_STATUS_TIMEOUT);
+                }
+                else
+                {
+                    s_sample.next_action_ms = now_ms + MP2797_SAMPLE_WAIT_TICKS;
+                }
+            }
+            else if ((scan_state == MP2797_SCAN_STATE_DONE)
+                     || (scan_state == MP2797_SCAN_STATE_ERROR))
+            {
+                mp2797_sample_request_clear(MP2797_SAMPLE_STATE_START_SCAN,
+                                             MP2797_STATUS_BUSY);
+            }
+            else
+            {
+                /* 旧扫描已经自行回到IDLE，可以直接开始本次扫描。 */
+                s_sample.state = MP2797_SAMPLE_STATE_START_SCAN;
+            }
+            return MP2797_STATUS_BUSY;
+
+        case MP2797_SAMPLE_STATE_START_SCAN:
+            status = mp2797_write_word_internal(MP2797_REG_ADC_CTRL,
+                                                 MP2797_ADC_SCAN_GO);
+            if (status != MP2797_STATUS_OK)
+            {
+                return mp2797_sample_fail(status);
+            }
+
+            s_sample.poll_count = 0u;
+            s_sample.next_action_ms = now_ms + MP2797_SAMPLE_WAIT_TICKS;
+            s_sample.scan_deadline_ms =
+                now_ms + mp2797_sample_poll_window_ms();
+            s_sample.state = MP2797_SAMPLE_STATE_WAIT_AFTER_START;
+            return MP2797_STATUS_BUSY;
+
+        case MP2797_SAMPLE_STATE_WAIT_AFTER_START:
+            if (!mp2797_time_reached(now_ms, s_sample.next_action_ms))
+            {
+                return MP2797_STATUS_BUSY;
+            }
+
+            s_sample.state = MP2797_SAMPLE_STATE_POLL_SCAN;
+            return MP2797_STATUS_BUSY;
+
+        case MP2797_SAMPLE_STATE_POLL_SCAN:
+            if (!mp2797_time_reached(now_ms, s_sample.next_action_ms))
+            {
+                return MP2797_STATUS_BUSY;
+            }
+            if (mp2797_time_reached(now_ms, s_sample.scan_deadline_ms))
+            {
+                mp2797_sample_request_clear(MP2797_SAMPLE_STATE_IDLE,
+                                             MP2797_STATUS_TIMEOUT);
+                return MP2797_STATUS_BUSY;
+            }
+
+            status = mp2797_get_voltage_scan_state_internal(&scan_state);
+            if (status != MP2797_STATUS_OK)
+            {
+                return mp2797_sample_fail(status);
+            }
+
+            if (scan_state == MP2797_SCAN_STATE_DONE)
+            {
+                mp2797_sample_request_clear(MP2797_SAMPLE_STATE_READ_PACK,
+                                             MP2797_STATUS_OK);
+            }
+            else if (scan_state == MP2797_SCAN_STATE_ERROR)
+            {
+                mp2797_sample_request_clear(MP2797_SAMPLE_STATE_IDLE,
+                                             MP2797_STATUS_SCAN_ERROR);
+            }
+            else if (scan_state == MP2797_SCAN_STATE_IDLE)
+            {
+                /*
+                 * GO命令发出并等待后仍回到IDLE，说明命令没有保持有效，
+                 * 将其作为扫描错误处理，而不是无限等待。
+                 */
+                mp2797_sample_request_clear(MP2797_SAMPLE_STATE_IDLE,
+                                             MP2797_STATUS_SCAN_ERROR);
+            }
+            else
+            {
+                s_sample.poll_count++;
+                if (s_sample.poll_count >= s_mp2797_config.scan_poll_limit)
+                {
+                    mp2797_sample_request_clear(MP2797_SAMPLE_STATE_IDLE,
+                                                 MP2797_STATUS_TIMEOUT);
+                }
+                else
+                {
+                    s_sample.next_action_ms = now_ms + MP2797_SAMPLE_WAIT_TICKS;
+                }
+            }
+            return MP2797_STATUS_BUSY;
+
+        case MP2797_SAMPLE_STATE_CLEAR_SCAN:
+            status = mp2797_write_word_internal(MP2797_REG_ADC_CTRL, 0u);
+            if (status != MP2797_STATUS_OK)
+            {
+                return mp2797_sample_fail(status);
+            }
+
+            s_sample.next_action_ms = now_ms + MP2797_SAMPLE_WAIT_TICKS;
+            s_sample.state = MP2797_SAMPLE_STATE_WAIT_AFTER_CLEAR;
+            return MP2797_STATUS_BUSY;
+
+        case MP2797_SAMPLE_STATE_WAIT_AFTER_CLEAR:
+            if (!mp2797_time_reached(now_ms, s_sample.next_action_ms))
+            {
+                return MP2797_STATUS_BUSY;
+            }
+
+            if (s_sample.state_after_clear == MP2797_SAMPLE_STATE_IDLE)
+            {
+                status = s_sample.status_after_clear;
+                s_sample.state = MP2797_SAMPLE_STATE_IDLE;
+                return status;
+            }
+
+            s_sample.state = s_sample.state_after_clear;
+            return MP2797_STATUS_BUSY;
+
+        case MP2797_SAMPLE_STATE_READ_PACK:
+            status = mp2797_read_pack_voltage_internal(
+                &s_sample.working_voltages.pack_raw,
+                &s_sample.working_voltages.pack_mv);
+            if (status != MP2797_STATUS_OK)
+            {
+                return mp2797_sample_fail(status);
+            }
+
+            s_sample.cell_index = 0u;
+            s_sample.state = MP2797_SAMPLE_STATE_READ_CELL;
+            return MP2797_STATUS_BUSY;
+
+        case MP2797_SAMPLE_STATE_READ_CELL:
+            status = mp2797_read_cell_voltage_internal(
+                (uint8_t)(s_sample.cell_index + 1u),
+                &s_sample.working_voltages.cell_raw[s_sample.cell_index],
+                &s_sample.working_voltages.cell_mv[s_sample.cell_index]);
+            if (status != MP2797_STATUS_OK)
+            {
+                return mp2797_sample_fail(status);
+            }
+
+            s_sample.working_voltages.cell_sum_mv +=
+                s_sample.working_voltages.cell_mv[s_sample.cell_index];
+            s_sample.cell_index++;
+
+            if (s_sample.cell_index >= s_sample.working_voltages.cell_count)
+            {
+                s_sample.working_voltages.valid = true;
+                *voltages = s_sample.working_voltages;
+                s_sample.state = MP2797_SAMPLE_STATE_IDLE;
+                return MP2797_STATUS_OK;
+            }
+            return MP2797_STATUS_BUSY;
+
+        case MP2797_SAMPLE_STATE_IDLE:
+        default:
+            return mp2797_sample_fail(MP2797_STATUS_ERROR);
+    }
+}
+
 mp2797_status_t mp2797_read_cell_voltages(mp2797_cell_voltages_t *voltages)//读取 VTOP 总压以及所有已配置电芯的电压
 {
     if (voltages == NULL)
     {
         return MP2797_STATUS_INVALID_ARG;
+    }
+    if (mp2797_sample_is_active())
+    {
+        return MP2797_STATUS_BUSY;
     }
 
     memset(voltages, 0, sizeof(*voltages));//把整个结果结构体清零
@@ -748,6 +1178,7 @@ mp2797_status_t mp2797_read_cell_voltages(mp2797_cell_voltages_t *voltages)//读
 
 void mp2797_shutdown(void)
 {
+    mp2797_sample_reset_context();
     GPIO_ResetBits(BOARD_AFE_NSHDN_PORT, BOARD_AFE_NSHDN_PIN);
     s_mp2797_ready = false;
     s_mp2797_config_valid = false;
