@@ -136,20 +136,31 @@ static const char *console_afe_status_detail(mp2797_status_t status)//AFE状态-
 static void console_start_cell(uint8_t cell_number)//尝试启动某一节电芯的均衡，然后把执行结果通过串口打印出来
 {
     char response[128];
+    bms_app_afe_snapshot_t afe_snapshot;
     cell_balance_status_t status = bms_app_start_balance(cell_number);
 
     if (status == CELL_BALANCE_STATUS_OK)
     {
         (void)snprintf(response, sizeof(response), "OK: balancing cell C%u\r\n", (unsigned int)cell_number);
     }
-    else if ((status == CELL_BALANCE_STATUS_VOLTAGE_INVALID)&& (bms_app_get_afe_status() != MP2797_STATUS_OK))
+    else if (status == CELL_BALANCE_STATUS_VOLTAGE_INVALID)
     {
-        mp2797_status_t afe_status = bms_app_get_afe_status();
-        (void)snprintf(response, sizeof(response),
-                       "ERROR: C%u not started, AFE code=%u - %s\r\n",
-                       (unsigned int)cell_number,
-                       (unsigned int)afe_status,
-                       console_afe_status_detail(afe_status));
+        bms_app_get_afe_snapshot(&afe_snapshot);
+        if (afe_snapshot.status != MP2797_STATUS_OK)
+        {
+            (void)snprintf(response, sizeof(response),
+                           "ERROR: C%u not started, AFE code=%u - %s\r\n",
+                           (unsigned int)cell_number,
+                           (unsigned int)afe_snapshot.status,
+                           console_afe_status_detail(afe_snapshot.status));
+        }
+        else
+        {
+            (void)snprintf(response, sizeof(response),
+                           "ERROR: C%u, %s\r\n",
+                           (unsigned int)cell_number,
+                           console_balance_error_text(status));
+        }
     }
     else
     {
@@ -259,7 +270,8 @@ static void console_receive_commands(void)
 static void console_print_afe_voltages(void)//在串口中打印电压数据
 {
     char line[128];
-    const mp2797_cell_voltages_t *voltages;
+    bms_app_afe_snapshot_t snapshot;
+    const mp2797_cell_voltages_t *voltages = &snapshot.voltages;
     uint32_t now_ms = mwTick;
 
     if (!s_afe_print_enabled|| 
@@ -267,26 +279,25 @@ static void console_print_afe_voltages(void)//在串口中打印电压数据
     {
         return;
     }
-    voltages = bms_app_get_voltages();
+    bms_app_get_afe_snapshot(&snapshot);
 
     /*
      * 分步采样期间等待整帧完成再打印。这里不更新时间戳，
      * 因而状态机结束后会立即输出新数据或本轮错误。
      */
-    if (bms_app_is_afe_sampling())
+    if (snapshot.sampling)
     {
         return;
     }
 
     s_last_afe_print_ms = now_ms;//记录本次打印时间
 
-    if ((bms_app_get_afe_status() != MP2797_STATUS_OK) || !voltages->valid)//检查 AFE 状态和电压数据是否有效
+    if ((snapshot.status != MP2797_STATUS_OK) || !voltages->valid)//检查 AFE 状态和电压数据是否有效
     {
-        mp2797_status_t status = bms_app_get_afe_status();
         (void)snprintf(line, sizeof(line),
                        "AFE ERROR: code=%u - %s\r\n",
-                       (unsigned int)status,
-                       console_afe_status_detail(status));
+                       (unsigned int)snapshot.status,
+                       console_afe_status_detail(snapshot.status));
         console_write(line);
         /* 错误只报告一次，AFE仍在后台采样；再次输入 startafe 可重新开启打印。 */
         s_afe_print_enabled = false;

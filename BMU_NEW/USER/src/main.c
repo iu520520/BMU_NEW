@@ -11,6 +11,9 @@
 /* NTFx CODE END Include*/
 
 #include "bms_app.h"
+#include "freertos_app.h"
+#include "FreeRTOS.h"
+#include "task.h"
 
 /**
  * @brief  Main program.
@@ -39,9 +42,23 @@ int main(void)
     }
 
     bms_app_init();
-    while(1)
+    if (!freertos_app_init())
     {
-        bms_app_task();
+        while (1)
+        {
+            __NOP();
+        }
     }
 
+    /*
+     * FreeRTOS启动时会按SystemCoreClock重新配置SysTick。
+     * Console任务优先级高于AFE任务，UART4中断可立即唤醒并触发抢占。
+     */
+    vTaskStartScheduler();
+
+    /* 只有堆空间不足或端口启动失败时，调度器才会返回。 */
+    while (1)
+    {
+        __NOP();
+    }
 }

@@ -19,6 +19,9 @@ set(APP_AFE_DIR "${APP_DIR}/AFE")
 set(APP_BALANCE_DIR "${APP_DIR}/CellBalance")
 set(APP_CONSOLE_DIR "${APP_DIR}/Console")
 set(APP_DRIVER_DIR "${APP_DIR}/Drivers")
+set(FREERTOS_DIR
+    "${CMAKE_CURRENT_LIST_DIR}/Middlewares/Third_Party/FreeRTOS/Source")
+set(FREERTOS_PORT_DIR "${FREERTOS_DIR}/portable/GCC/ARM_CM4F")
 
 if(NOT EXISTS "${NTFX_PROJECT_DIR}/BMU_NEW.ntfx")
     message(FATAL_ERROR "NTFx generated project not found: ${NTFX_PROJECT_DIR}")
@@ -31,6 +34,7 @@ add_executable(${PROJECT_NAME}
     "${NTFX_USER_DIR}/src/n32g45x_it.c"
     "${NTFX_USER_DIR}/src/n32g45x_cfg.c"
     "${APP_DIR}/bms_app.c"
+    "${APP_DIR}/freertos_app.c"
     "${APP_BALANCE_DIR}/cell_balance.c"
     "${APP_CONSOLE_DIR}/console.c"
     "${APP_DRIVER_DIR}/soft_i2c.c"
@@ -46,6 +50,11 @@ add_executable(${PROJECT_NAME}
     "${NTFX_DRIVER_DIR}/n32g45x_std_periph_driver/src/n32g45x_usart.c"
     "${NTFX_DRIVER_DIR}/n32g45x_std_periph_driver/src/n32g45x_can.c"
     "${APP_AFE_DIR}/mp2797.c"
+    "${FREERTOS_DIR}/tasks.c"
+    "${FREERTOS_DIR}/queue.c"
+    "${FREERTOS_DIR}/list.c"
+    "${FREERTOS_DIR}/portable/MemMang/heap_4.c"
+    "${FREERTOS_PORT_DIR}/port.c"
 )
 
 target_include_directories(${PROJECT_NAME} PRIVATE
@@ -58,6 +67,8 @@ target_include_directories(${PROJECT_NAME} PRIVATE
     "${NTFX_DRIVER_DIR}/CMSIS/core"
     "${NTFX_DRIVER_DIR}/CMSIS/device"
     "${NTFX_DRIVER_DIR}/n32g45x_std_periph_driver/inc"
+    "${FREERTOS_DIR}/include"
+    "${FREERTOS_PORT_DIR}"
 )
 
 target_compile_definitions(${PROJECT_NAME} PRIVATE
@@ -68,7 +79,8 @@ target_compile_definitions(${PROJECT_NAME} PRIVATE
 target_compile_options(${PROJECT_NAME} PRIVATE
     -mcpu=cortex-m4
     -mthumb
-    -mfloat-abi=soft
+    -mfpu=fpv4-sp-d16
+    -mfloat-abi=hard
     -ffunction-sections
     -fdata-sections
     -Wall
@@ -78,7 +90,8 @@ target_compile_options(${PROJECT_NAME} PRIVATE
 target_link_options(${PROJECT_NAME} PRIVATE
     -mcpu=cortex-m4
     -mthumb
-    -mfloat-abi=soft
+    -mfpu=fpv4-sp-d16
+    -mfloat-abi=hard
     -T${NTFX_LINKER_SCRIPT}
     -Wl,-Map=${PROJECT_NAME}.map
     -Wl,--gc-sections

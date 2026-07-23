@@ -9,6 +9,11 @@
 /* NTFx CODE END */
 
 #include "pc_uart.h"
+#include "freertos_app.h"
+#include "FreeRTOS.h"
+#include "task.h"
+
+extern void xPortSysTickHandler(void);
 
 /* NTFx CODE START */
 extern __IO uint32_t mwTick;
@@ -72,6 +77,11 @@ void UsageFault_Handler(void)
 
     }
 }
+/*
+ * NTFx固定生成一个空SVC入口。将该占位函数重命名，
+ * 真正的SVC_Handler由FreeRTOS Cortex-M端口直接提供。
+ */
+#define SVC_Handler NTFX_Generated_SVC_Handler
 /* NTFx CODE START */
 /**
  * @brief  This function handles SVCall exception.
@@ -81,6 +91,7 @@ void SVC_Handler(void)
 /* NTFx CODE END */
 
 }
+#undef SVC_Handler
 /* NTFx CODE START */
 /**
  * @brief  This function handles Debug Monitor exception.
@@ -99,6 +110,11 @@ void SysTick_Handler(void)
     mwTick++;
 /* NTFx CODE END */
 
+    if (xTaskGetSchedulerState() != taskSCHEDULER_NOT_STARTED)
+    {
+        xPortSysTickHandler();
+    }
+
 }
 /* NTFx CODE START(UART4_IRQHandler)*/
 /**
@@ -114,6 +130,7 @@ void UART4_IRQHandler(void)
 /* NTFx CODE END */
 
         pc_uart_irq_handler();
+        freertos_app_notify_console_from_isr();
 
     }
 /* NTFx CODE START */

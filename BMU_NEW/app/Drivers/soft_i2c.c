@@ -1,5 +1,8 @@
 #include "soft_i2c.h"
 
+#include "FreeRTOS.h"
+#include "task.h"
+
 #include "board_pins.h"
 #include "n32g45x_gpio.h"
 
@@ -144,6 +147,30 @@ static void soft_i2c_stop(void)
     soft_i2c_delay();
 }
 
+/*
+ * 软件I2C一个事务由连续的GPIO边沿组成，不允许在半个字节中切换任务。
+ * 这里只暂停任务调度，不关闭中断；UART4仍可及时收字节并通知Console，
+ * xTaskResumeAll后会立即执行已经挂起的高优先级任务。
+ */
+static bool soft_i2c_suspend_scheduler(void)
+{
+    if (xTaskGetSchedulerState() == taskSCHEDULER_RUNNING)
+    {
+        vTaskSuspendAll();
+        return true;
+    }
+
+    return false;
+}
+
+static void soft_i2c_resume_scheduler(bool scheduler_suspended)
+{
+    if (scheduler_suspended)
+    {
+        (void)xTaskResumeAll();
+    }
+}
+
 
 
 
@@ -267,7 +294,7 @@ bool soft_i2c_is_bus_idle(void)//检查i2c是否处于idle状态
     return soft_i2c_read_sda() && soft_i2c_read_scl();
 }
 
-void soft_i2c_recover_bus(void)//恢复卡死的总线
+static void soft_i2c_recover_bus_unlocked(void)//恢复卡死的总线
 {
     soft_i2c_sda_release();
 
@@ -283,7 +310,16 @@ void soft_i2c_recover_bus(void)//恢复卡死的总线
     soft_i2c_stop();
 }
 
-soft_i2c_status_t soft_i2c_write(uint8_t dev_addr_7bit, const uint8_t *data, size_t len)//向这个 7 位地址的 I²C 从设备连续写入 len 个字节
+void soft_i2c_recover_bus(void)
+{
+    bool scheduler_suspended = soft_i2c_suspend_scheduler();
+    soft_i2c_recover_bus_unlocked();
+    soft_i2c_resume_scheduler(scheduler_suspended);
+}
+
+static soft_i2c_status_t soft_i2c_write_unlocked(uint8_t dev_addr_7bit,
+                                                  const uint8_t *data,
+                                                  size_t len)
 {
     if ((data == NULL) && (len > 0u))//如果发送长度为0，或者指针为空指针，报错
     {
@@ -317,7 +353,20 @@ soft_i2c_status_t soft_i2c_write(uint8_t dev_addr_7bit, const uint8_t *data, siz
     return SOFT_I2C_STATUS_OK;
 }
 
-soft_i2c_status_t soft_i2c_read(uint8_t dev_addr_7bit, uint8_t *data, size_t len)//从 7 位地址的 I²C 从设备连续读取 len 个字节，并把数据存入 data 指向的缓冲区
+soft_i2c_status_t soft_i2c_write(uint8_t dev_addr_7bit,
+                                 const uint8_t *data,
+                                 size_t len)
+{
+    bool scheduler_suspended = soft_i2c_suspend_scheduler();
+    soft_i2c_status_t status =
+        soft_i2c_write_unlocked(dev_addr_7bit, data, len);
+    soft_i2c_resume_scheduler(scheduler_suspended);
+    return status;
+}
+
+static soft_i2c_status_t soft_i2c_read_unlocked(uint8_t dev_addr_7bit,
+                                                 uint8_t *data,
+                                                 size_t len)
 {
     if ((data == NULL) && (len > 0u))
     {
@@ -352,13 +401,23 @@ soft_i2c_status_t soft_i2c_read(uint8_t dev_addr_7bit, uint8_t *data, size_t len
     return SOFT_I2C_STATUS_OK;
 }
 
+soft_i2c_status_t soft_i2c_read(uint8_t dev_addr_7bit,
+                                uint8_t *data,
+                                size_t len)
+{
+    bool scheduler_suspended = soft_i2c_suspend_scheduler();
+    soft_i2c_status_t status =
+        soft_i2c_read_unlocked(dev_addr_7bit, data, len);
+    soft_i2c_resume_scheduler(scheduler_suspended);
+    return status;
+}
 
-
-soft_i2c_status_t soft_i2c_write_read(uint8_t dev_addr_7bit,
-                                      const uint8_t *tx_data,
-                                      size_t tx_len,
-                                      uint8_t *rx_data,                                   
-                                       size_t rx_len)//(设备的七位地址，准备写出的数据，数据长度，保存读取数据的缓冲区，读取的字节数)
+static soft_i2c_status_t soft_i2c_write_read_unlocked(
+    uint8_t dev_addr_7bit,
+    const uint8_t *tx_data,
+    size_t tx_len,
+    uint8_t *rx_data,
+    size_t rx_len)
 {
     if (((tx_data == NULL) && (tx_len > 0u)) || ((rx_data == NULL) && (rx_len > 0u)))
     {
@@ -423,10 +482,28 @@ soft_i2c_status_t soft_i2c_write_read(uint8_t dev_addr_7bit,
     return SOFT_I2C_STATUS_OK;
 }
 
-soft_i2c_status_t soft_i2c_write_reg8(uint8_t dev_addr_7bit,
-                                      uint8_t reg_addr,
-                                      const uint8_t *data,
-                                      size_t len)//（七位地址，设备内部的8位寄存器地址，要写入的数据，写入的字节数）
+soft_i2c_status_t soft_i2c_write_read(uint8_t dev_addr_7bit,
+                                      const uint8_t *tx_data,
+                                      size_t tx_len,
+                                      uint8_t *rx_data,
+                                      size_t rx_len)
+{
+    bool scheduler_suspended = soft_i2c_suspend_scheduler();
+    soft_i2c_status_t status =
+        soft_i2c_write_read_unlocked(dev_addr_7bit,
+                                     tx_data,
+                                     tx_len,
+                                     rx_data,
+                                     rx_len);
+    soft_i2c_resume_scheduler(scheduler_suspended);
+    return status;
+}
+
+static soft_i2c_status_t soft_i2c_write_reg8_unlocked(
+    uint8_t dev_addr_7bit,
+    uint8_t reg_addr,
+    const uint8_t *data,
+    size_t len)
 {
     if ((data == NULL) && (len > 0u))
     {
@@ -465,6 +542,21 @@ soft_i2c_status_t soft_i2c_write_reg8(uint8_t dev_addr_7bit,
 
     soft_i2c_stop();
     return SOFT_I2C_STATUS_OK;
+}
+
+soft_i2c_status_t soft_i2c_write_reg8(uint8_t dev_addr_7bit,
+                                      uint8_t reg_addr,
+                                      const uint8_t *data,
+                                      size_t len)
+{
+    bool scheduler_suspended = soft_i2c_suspend_scheduler();
+    soft_i2c_status_t status =
+        soft_i2c_write_reg8_unlocked(dev_addr_7bit,
+                                     reg_addr,
+                                     data,
+                                     len);
+    soft_i2c_resume_scheduler(scheduler_suspended);
+    return status;
 }
 
 soft_i2c_status_t soft_i2c_read_reg8(uint8_t dev_addr_7bit,
