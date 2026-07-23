@@ -192,14 +192,14 @@ pc_uart_status_t pc_uart_write(const uint8_t *data, size_t length, uint32_t time
             { 
                 return PC_UART_STATUS_TX_TIMEOUT; //超时后停止剩余数据发送并返回错误
             } 
-
+        }
         USART_SendData(BOARD_PC_UART, data[index]); //把当前下标对应的一个字节写入发送寄存器
         s_statistics.tx_bytes++; 
-    } 
+        } 
 
     return PC_UART_STATUS_OK;
 }
-} 
+ 
 
 /* 将以空字符结尾的 C 字符串发送到 PC 串口。 */
 pc_uart_status_t pc_uart_write_string(const char *text, uint32_t timeout_ms)
