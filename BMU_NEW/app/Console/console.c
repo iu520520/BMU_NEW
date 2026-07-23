@@ -278,6 +278,8 @@ static void console_print_afe_voltages(void)//在串口中打印电压数据
                        (unsigned int)status,
                        console_afe_status_detail(status));
         console_write(line);
+        /* 错误只报告一次，AFE仍在后台采样；再次输入 startafe 可重新开启打印。 */
+        s_afe_print_enabled = false;
         return;
     }
 
