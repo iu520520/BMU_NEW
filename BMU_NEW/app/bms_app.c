@@ -13,7 +13,6 @@ static mp2797_status_t s_afe_status = MP2797_STATUS_NOT_READY;
 static mp2797_config_t s_afe_config;
 static mp2797_cell_voltages_t s_voltages;
 static uint32_t s_last_sample_ms;
-static bool s_afe_sampling_enabled;
 
 void bms_app_init(void)
 {
@@ -26,11 +25,9 @@ void bms_app_init(void)
     (void)cell_balance_init(&balance_config);
 
     mp2797_get_default_config(&s_afe_config);
-    mp2797_shutdown();
-    s_afe_status = MP2797_STATUS_NOT_READY;
     s_voltages.valid = false;
-    s_afe_sampling_enabled = false;
-    s_last_sample_ms = mwTick;
+    s_afe_status = mp2797_init(&s_afe_config);
+    s_last_sample_ms = mwTick - BMS_VOLTAGE_SAMPLE_PERIOD_MS;
 }
 
 void bms_app_task(void)
@@ -39,12 +36,6 @@ void bms_app_task(void)
     rs232_poll();
     pc_uart_poll();
     console_task();
-
-    /* 未收到 startafe 命令时不访问 AFE，保证调试串口始终可响应。 */
-    if (!s_afe_sampling_enabled)
-    {
-        return;
-    }
 
     uint32_t now_ms = mwTick;
     if ((uint32_t)(now_ms - s_last_sample_ms) < BMS_VOLTAGE_SAMPLE_PERIOD_MS)
@@ -56,9 +47,9 @@ void bms_app_task(void)
     if (!mp2797_is_ready())
     {
         cell_balance_stop(CELL_BALANCE_STOP_AFE_ERROR, now_ms);
-        s_afe_status = MP2797_STATUS_NOT_READY;
         s_voltages.valid = false;
-        s_afe_sampling_enabled = false;
+        /* AFE 始终保持唤醒；初始化失败时每秒重新尝试建立通信。 */
+        s_afe_status = mp2797_init(&s_afe_config);
         return;
     }
 
@@ -67,44 +58,12 @@ void bms_app_task(void)
     {
         cell_balance_stop(CELL_BALANCE_STOP_AFE_ERROR, now_ms);
         s_voltages.valid = false;
-        s_afe_sampling_enabled = false;
-        mp2797_shutdown();
         return;
     }
 
     (void)cell_balance_process(s_voltages.cell_mv,
                                s_voltages.cell_count,
                                now_ms);
-}
-
-mp2797_status_t bms_app_start_afe(void)
-{
-    if (s_afe_sampling_enabled && mp2797_is_ready())
-    {
-        return MP2797_STATUS_OK;
-    }
-
-    s_afe_sampling_enabled = false;
-    s_voltages.valid = false;
-    s_afe_status = mp2797_init(&s_afe_config);
-    if (s_afe_status != MP2797_STATUS_OK)
-    {
-        mp2797_shutdown();
-        return s_afe_status;
-    }
-
-    s_afe_sampling_enabled = true;
-    s_last_sample_ms = mwTick - BMS_VOLTAGE_SAMPLE_PERIOD_MS;
-    return MP2797_STATUS_OK;
-}
-
-void bms_app_stop_afe(void)
-{
-    s_afe_sampling_enabled = false;
-    cell_balance_manual_stop(mwTick);
-    mp2797_shutdown();
-    s_voltages.valid = false;
-    s_afe_status = MP2797_STATUS_NOT_READY;
 }
 
 cell_balance_status_t bms_app_start_balance(uint8_t cell_number)

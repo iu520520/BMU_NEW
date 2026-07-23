@@ -39,8 +39,8 @@ static void console_show_menu(void)//menu
     console_write("\r\nBMU console ready\r\n");
     console_write("C1..C16 : start balancing selected cell\r\n");
     console_write("r       : stop all balancing channels\r\n");
-    console_write("startafe: start AFE and print cell voltages every second\r\n");
-    console_write("stopafe : stop sampling and shut down AFE\r\n");
+    console_write("startafe: start printing AFE voltages every second\r\n");
+    console_write("stopafe : stop printing (AFE keeps sampling)\r\n");
     console_write("menu    : show this menu\r\n");
     console_write("c       : clear terminal screen\r\n");
 }
@@ -186,34 +186,14 @@ static void console_execute_command(void)//处理串口命令
     }
     else if (strcmp(s_command, "startafe") == 0)
     {
-        char response[128];
-        mp2797_status_t status = bms_app_start_afe();
-
-        if (status == MP2797_STATUS_OK)
-        {
-            /*
-             * 本轮 console_task 返回后，bms_app_task 会立即完成第一次采样。
-             * 打印延后一周期，避免把“尚未取得首帧数据”误报为 AFE 故障。
-             */
-            s_afe_print_enabled = true;
-            s_last_afe_print_ms = mwTick;
-            console_write("OK: AFE sampling started\r\n");
-        }
-        else
-        {
-            s_afe_print_enabled = false;
-            (void)snprintf(response, sizeof(response),
-                           "AFE ERROR: code=%u - %s\r\n",
-                           (unsigned int)status,
-                           console_afe_status_detail(status));
-            console_write(response);
-        }
+        s_afe_print_enabled = true;
+        s_last_afe_print_ms = mwTick;
+        console_write("OK: AFE voltage printing started; sampling is always active\r\n");
     }
     else if (strcmp(s_command, "stopafe") == 0)
     {
         s_afe_print_enabled = false;
-        bms_app_stop_afe();
-        console_write("OK: AFE sampling stopped\r\n");
+        console_write("OK: AFE voltage printing stopped; sampling remains active\r\n");
     }
     else if (strcmp(s_command, "menu") == 0)
     {
@@ -298,8 +278,6 @@ static void console_print_afe_voltages(void)//在串口中打印电压数据
                        (unsigned int)status,
                        console_afe_status_detail(status));
         console_write(line);
-        /* 故障只报告一次；再次输入 startafe 才重新初始化和采样。 */
-        s_afe_print_enabled = false;
         return;
     }
 

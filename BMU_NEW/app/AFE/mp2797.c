@@ -421,10 +421,11 @@ mp2797_status_t mp2797_init(const mp2797_config_t *config)
     s_mp2797_config_valid = true;//驱动已经拥有有效配置，知道 I2C 地址和 CRC 设置
     s_mp2797_ready = false;//初始化还没有全部成功，暂时不能开始正式采样
 
-    /*首先强制芯片进入确定的关断状态。数据手册规定进入关断状态最长需要 8 ms，此处等待 10 ms 留出余量，然后再等待 5 ms 完成唤醒 */
-
-    GPIO_ResetBits(BOARD_AFE_NSHDN_PORT, BOARD_AFE_NSHDN_PIN);//先关断再唤醒，把MP2797从一个不确定状态复位
-    mp2797_delay_us(MP2797_SHUTDOWN_DELAY_US);
+    /*
+     * 本项目将 MP2797 作为持续工作的电压采样 AFE。
+     * NSHDN（PC3）在 GPIO 初始化后始终保持高电平；拉高后等待至少 5 ms，
+     * 再访问通信接口。通信失败时也不主动将 AFE 关断。
+     */
     GPIO_SetBits(BOARD_AFE_NSHDN_PORT, BOARD_AFE_NSHDN_PIN);
     mp2797_delay_us(MP2797_WAKE_DELAY_US);
 
